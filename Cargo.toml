@@ -1,0 +1,35 @@
+[package]
+name = "phd_simulation"
+version = "0.1.0"
+authors = ["German Molina <germolinal@gmail.com>"]
+edition = "2018"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "simple_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "simple"
+path = "src/bin.rs"
+
+[dependencies]
+simulation_state = { path = "../simulation_state" }
+communication_protocols = { path = "../communication_protocols" }
+building_model = { path = "../building_model" }
+people = { path = "../people" }
+schedule = { path = "../schedule" }
+calendar = { path = "../calendar" }
+weather = { path = "../weather" }
+multiphysics_model = { path = "../physics/multiphysics_model" }
+controller = { path = "../controller" }
+polynomial = { path = "../polynomial" }
+simple_results = { path = "../simple_results" }
+serde_json = "1.0"
+
+#[dev-dependencies]
+geometry3d = {path = "../geometry3d"}
+
+
