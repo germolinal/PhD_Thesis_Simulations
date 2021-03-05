@@ -1,5 +1,7 @@
 use std::env;
+use std::io::Write;
 
+use std::fs;
 use serde_json;        
 
 
@@ -22,6 +24,7 @@ use building_model::object_trait::ObjectTrait;
 use building_model::boundary::Boundary;
 use building_model::fenestration::{FenestrationPositions,FenestrationType};
 use building_model::heating_cooling::HeatingCoolingKind;
+
 
 use geometry3d::loop3d::Loop3D;
 use geometry3d::point3d::Point3D;
@@ -56,6 +59,7 @@ fn get_squared_polygon(outer_area: f64, inner_area: f64)->Polygon3D{
     p
 }
 
+#[allow(dead_code)]
 fn add_wall_between_spaces(building: &mut Building, space_a_index: usize, space_b_index: usize, area: f64, wall_construction_index: usize){
     let space_a_name: String;
     let space_b_name: String;
@@ -80,7 +84,7 @@ fn add_wall_between_spaces(building: &mut Building, space_a_index: usize, space_
 }
 
 /// Adds a wall to a space... can have a window.
-fn add_wall_to_space(building: &mut Building, state: &mut SimulationState, space_index : usize, wall_area: f64, window_area: f64, wall_construction_index: usize, window_construction_index: usize){
+fn add_wall_to_space(case: Case, building: &mut Building, state: &mut SimulationState, space_index : usize, wall_area: f64, window_area: f64, wall_construction_index: usize, window_construction_index: usize){
     assert!(wall_area > window_area);
 
     let space_name : String;
@@ -98,29 +102,45 @@ fn add_wall_to_space(building: &mut Building, state: &mut SimulationState, space
     
     building.set_surface_front_boundary(surface_index, Boundary::Space(space_index)).unwrap();
 
-    // Add window.        
-    let window_polygon = get_squared_polygon(window_area, 0.0);
-    let window_index = building.add_fenestration(state, format!("Window in space {}", space_name), FenestrationPositions::Binary, FenestrationType::Window);
-    building.set_fenestration_construction(window_index, window_construction_index).unwrap();     
-    building.set_fenestration_polygon(window_index, window_polygon).unwrap();
-    building.set_fenestration_front_boundary(surface_index, Boundary::Space(space_index)).unwrap();
+    // Add window.   
+    if window_area > 0.0 {
+        let window_polygon = get_squared_polygon(window_area, 0.0);
+
+        let position = if case.has_control(){
+            FenestrationPositions::Binary
+        }else{
+            FenestrationPositions::FixedClosed
+        };
+        
+        let window_index = building.add_fenestration(state, format!("Window in space {}", space_name), position, FenestrationType::Window);
+        building.set_fenestration_construction(window_index, window_construction_index).unwrap();     
+        building.set_fenestration_polygon(window_index, window_polygon).unwrap();
+        building.set_fenestration_front_boundary(window_index, Boundary::Space(space_index)).unwrap();
+    }     
 
 }
 
 
-fn add_space(building: &mut Building, state: &mut SimulationState, name: &str, length: f64, width: f64, height: f64) -> usize {
+fn add_space(case: Case, building: &mut Building, state: &mut SimulationState, name: &str, length: f64, width: f64, height: f64, importance: f64) -> usize {
     // Volume
     let volume = length * width * height;
     let space_index = building.add_space(name.to_string());
     building.set_space_volume(space_index, volume).unwrap();
 
-    // Heater
-    building.add_heating_cooling_to_space(state,0, HeatingCoolingKind::ElectricHeating).unwrap();
-    building.set_space_max_heating_power(0, 1500.).unwrap();
+    let importance_schedule = Box::new(ScheduleConstant::new(importance));
 
-    // Lights
-    building.add_luminaire_to_space(state, 0).unwrap();
-    building.set_space_max_lighting_power(0, 180.0).unwrap();
+    building.set_space_importance(space_index, importance_schedule).unwrap();
+
+    
+    if case.has_control(){
+        // Heater
+        building.add_heating_cooling_to_space(state,space_index, HeatingCoolingKind::ElectricHeating).unwrap();
+        building.set_space_max_heating_power(space_index, 1500.).unwrap();
+    
+        // Lights
+        building.add_luminaire_to_space(state, space_index).unwrap();
+        building.set_space_max_lighting_power(space_index, 180.0).unwrap();
+    }
     
     // Return space index
     space_index
@@ -148,7 +168,7 @@ fn add_construction(building: &mut Building, substance_name: &'static str, prope
     
 }
 
-fn create_building(building: &mut Building, state: &mut SimulationState){
+fn create_building(case: Case, building: &mut Building, state: &mut SimulationState){
     // Set materials: All surfaces are made of 180mm concrete, except for windows.
 
     /* ************* */
@@ -159,7 +179,7 @@ fn create_building(building: &mut Building, state: &mut SimulationState){
         thermal_conductivity: 2.33, // W/m.K            
         specific_heat_capacity: 960., // J/kg.K
         density: 2400., // kg/m3
-    }, 180.0/1000.0);
+    }, 180.0/1000.0); // 180mm
     
     
     // Glass
@@ -167,7 +187,7 @@ fn create_building(building: &mut Building, state: &mut SimulationState){
         thermal_conductivity: 2.33, // W/m.K            
         specific_heat_capacity: 960., // J/kg.K
         density: 2400., // kg/m3
-    }, 3.0/1000.0);
+    }, 3.0/1000.0); // 3mm
     
     /* ************ */
     /* ADD GEOMETRY */
@@ -176,34 +196,263 @@ fn create_building(building: &mut Building, state: &mut SimulationState){
     let building_height = 2.5; // m
 
     // 2B + Livingroom + Bathroom setup.
-    let bed_1      = add_space(building, state, "Bedroom 1",  4.0, 4.0, building_height);
-    let bed_2      = add_space(building, state, "Bedroom 2",  4.0, 4.0, building_height);
-    let livingroom = add_space(building, state, "Livingroom", 4.0, 4.0, building_height);
-    let bathroom   = add_space(building, state, "Bathroom",   4.0, 4.0, building_height);
+    let bed_1      = add_space(case, building, state, "Bedroom 1",  3.6, 4.0, building_height, 1.0);
+    let bed_2      = add_space(case, building, state, "Bedroom 2",  2.4, 3.0, building_height, 1.0);
+    let livingroom = add_space(case, building, state, "Living room", 4.6, 4.0, building_height, 1.0);
+    let bathroom   = add_space(case, building, state, "Bathroom",   1.9, 2.4, building_height, 0.03);
+    let kitchen    = add_space(case, building, state, "Kitchen",    2.4, 4.3, building_height, 0.1);
+    let hallway    = add_space(case, building, state, "Hallway",    1.0, 4.3, building_height, 0.01);
     
-    // Perimeter
-    add_wall_to_space(building, state, bed_1, 4.0*building_height, 0.5*4.0*building_height, concrete_construction_index, glass_construction_index);
-    add_wall_to_space(building, state, bed_2, 4.0*building_height, 0.5*4.0*building_height, concrete_construction_index, glass_construction_index);
-    add_wall_to_space(building, state, livingroom, 4.0*building_height, 0.5*4.0*building_height, concrete_construction_index, glass_construction_index);
-    add_wall_to_space(building, state, bathroom, 4.0*building_height, 0.5*4.0*building_height, concrete_construction_index, glass_construction_index);
+    /* PERIMETER */
 
-    // Connection between zones
-    add_wall_between_spaces(building, bed_1, bed_2, 3.0 * building_height, concrete_construction_index);
+    // bedroom 1
+    let wall_perimeter = (1557.0 + 4115. + 3891.)/1000.0;
+    let wall_area = wall_perimeter * building_height;
+    let window_perimeter = 1.7;
+    let window_area = window_perimeter; // assume that windows are 1m hight
+    add_wall_to_space(case, building, state, bed_1, wall_area, window_area, concrete_construction_index, glass_construction_index);
 
+    // bedroom 2
+    let wall_perimeter = (3000.0 + 2339.)/1000.0;
+    let wall_area = wall_perimeter * building_height;
+    let window_perimeter = 0.9;
+    let window_area = window_perimeter; // assume that windows are 1m hight
+    add_wall_to_space(case, building, state, bed_2, wall_area, window_area, concrete_construction_index, glass_construction_index);
+
+    // livingroom
+    let wall_perimeter = (4000.0 + 4300.)/1000.0;
+    let wall_area = wall_perimeter * building_height;
+    let window_perimeter = 2.3;
+    let window_area = window_perimeter; // assume that windows are 1m hight
+    add_wall_to_space(case, building, state, livingroom, wall_area, window_area, concrete_construction_index, glass_construction_index);
+
+    // bathroom
+    let wall_perimeter = 1.9;
+    let wall_area = wall_perimeter * building_height;
+    let window_perimeter = 0.5;
+    let window_area = window_perimeter; // assume that windows are 1m hight
+    add_wall_to_space(case, building, state, bathroom, wall_area, window_area, concrete_construction_index, glass_construction_index);
+    /*
+    */
+    // kitchen
+    let wall_perimeter = (2400.0 + 4200.)/1000.0;
+    let wall_area = wall_perimeter * building_height;
+    let window_perimeter = 1.3;
+    let window_area = window_perimeter; // assume that windows are 1m hight
+    add_wall_to_space(case, building, state, kitchen, wall_area, window_area, concrete_construction_index, glass_construction_index);
+
+    // Hallway
+    let wall_perimeter = 1.0;
+    let wall_area = wall_perimeter * building_height;
+    let window_perimeter = 0.9;
+    let window_area = window_perimeter; // assume that windows are 1m hight
+    add_wall_to_space(case, building, state, hallway, wall_area, window_area, concrete_construction_index, glass_construction_index);
+    /*
+    */
+
+    /* CONNECTIONS BETWEEN ZONES */
+    //add_wall_between_spaces(building, bed_1, hallway, 2.4 * building_height, concrete_construction_index);
+    //add_wall_between_spaces(building, bed_1, livingroom, 4.0 * building_height, concrete_construction_index);
     
-
+    //add_wall_between_spaces(building, livingroom, hallway, 1.9 * building_height, concrete_construction_index);
+    //add_wall_between_spaces(building, livingroom, kitchen, 2.4 * building_height, concrete_construction_index);
+    
+    //add_wall_between_spaces(building, kitchen, hallway, 1.9 * building_height, concrete_construction_index);
+    //add_wall_between_spaces(building, kitchen, bathroom, 2.3 * building_height, concrete_construction_index);
+    
+    //add_wall_between_spaces(building, bathroom, hallway, 1.9 * building_height, concrete_construction_index);
+    //add_wall_between_spaces(building, bathroom, bed_2, 2.3 * building_height, concrete_construction_index);
+    
+    //add_wall_between_spaces(building, bed_2, hallway, (2.239 + 0.657) * building_height, concrete_construction_index);
+    
     
 }
 
+#[derive(Copy,Clone)]
+enum Case {
+    Section1_1,
+    Section1_2WithControl,
+    Section1_2WithoutControl,
+    Section1_3NotBusy,
+    Section1_3Busy
+}
 
+impl Case {
+
+    fn has_control(&self)->bool{
+        match self {
+            Case::Section1_1 => true,
+            Case::Section1_2WithControl => true,
+            Case::Section1_2WithoutControl => false,
+            Case::Section1_3Busy => false,
+            Case::Section1_3NotBusy => false
+        }
+    }
+
+    fn is_busy(&self)->bool {
+        match self{
+            Case::Section1_1 => false,
+            Case::Section1_2WithControl => false,
+            Case::Section1_2WithoutControl => false,
+            Case::Section1_3Busy => true,
+            Case::Section1_3NotBusy => false
+        }
+    }
+
+    fn is_proactive(&self)->bool{
+        match self {
+            Case::Section1_1 => true,
+            Case::Section1_2WithControl => false,
+            Case::Section1_2WithoutControl => false,
+            Case::Section1_3Busy => true,
+            Case::Section1_3NotBusy => true
+        }
+    }
+
+    fn filename(&self)->&str{
+        match self {
+            Case::Section1_1 => "Section1_1",
+            Case::Section1_2WithControl => "Section1_2WithControl",
+            Case::Section1_2WithoutControl => "Section1_2WithoutControl",
+            Case::Section1_3Busy => "Section1_3Busy",
+            Case::Section1_3NotBusy => "Section1_3NotBusy"
+        }
+    }
+}
+
+
+fn write_operation( case: Case, building: &Building, data : serde_json::Value){
+    
+        
+    let mut file = std::fs::File::create(format!("{}.csv",case.filename())).unwrap();
+
+    let mut wrote_header = false;
+    
+
+    let data = data.as_array().unwrap();
+    for tstep in data {
+        let tstep = tstep.as_object().unwrap();
+        let date = tstep.get("timestep_start").unwrap().as_object().unwrap();
+        let date : Date = Date {
+            month: date.get("month").unwrap().as_u64().unwrap() as usize,
+            day: date.get("day").unwrap().as_u64().unwrap() as usize,
+            hour: date.get("hour").unwrap().as_f64().unwrap(),
+        };
+        let controllers = tstep.get("controllers").unwrap();        
+        let person = controllers.as_object().unwrap().get("person").unwrap().as_object().unwrap();
+        
+        /*
+        if !wrote_header {
+            let mut status_header = String::new();
+            let status = person.get("current_status").unwrap().as_array().unwrap();
+            for per in status {
+                let per = per.as_object().unwrap();
+                let space = per.get("space").unwrap().as_str().unwrap();
+                let perception = per.get("perception").unwrap().as_str().unwrap();
+                status_header += format!(";{} - {}", perception, space).as_str();
+            }
+            file.write_all(format!("Date;Comfort{};Perception to fix;Location of perception to fix;Actions taken\n", status_header).as_bytes()).unwrap();
+            wrote_header = true;
+        }
+        */
+        
+        let attended = person.get("attended").unwrap().as_bool().unwrap();
+        //let behaved = person.get("behaved").unwrap().as_bool().unwrap();
+        if attended {            
+            let perception_to_fix = person.get("perception_to_fix").unwrap().as_str().unwrap();
+            let location_index = person.get("location_of_worst_perception").unwrap().as_i64().unwrap() as usize;
+            let location_to_fix = building.get_space(location_index).unwrap().name();
+            
+            let actions_taken_vec = person.get("actions_taken").unwrap().as_array().unwrap();
+            let mut actions_taken : String = "".to_string();
+            
+            let comfort = person.get("potential_comfort").unwrap().as_f64().unwrap();
+
+            // Register perceptions
+            let status = person.get("current_status").unwrap().as_array().unwrap();
+            let mut status_values = String::new();
+            for per in status {
+                let per = per.as_object().unwrap();
+                let val = per.get("value").unwrap().as_f64().unwrap();
+                status_values+=format!(";{}",val).as_str();
+            }
+
+            // Register actions
+            if actions_taken_vec.is_empty(){
+               actions_taken = "None".to_string(); 
+            }else{
+                for v in actions_taken_vec {
+                    let v = v.as_array().unwrap();
+                    assert_eq!(v.len(), 2);
+                    let action = v[0].as_str().unwrap();
+                    let loc = v[1].as_str().unwrap();
+                    actions_taken = format!("{}{}{} in {} ",actions_taken, if actions_taken.is_empty() {""}else{", "}, action, loc);                    
+                }
+            }
+
+
+            
+
+
+            file.write_all(format!("{};{}{};{};{};{}\n", date,comfort,status_values, perception_to_fix, location_to_fix, actions_taken).as_bytes()).unwrap();
+        }
+
+    }
+
+}
+
+fn write_comfort( case: Case, data : serde_json::Value){
+    
+        
+    let mut file = std::fs::File::create(format!("{}.csv",case.filename())).unwrap();
+    file.write_all("Date,ActualComfort,PotentialComfort,Satisfaction\n".as_bytes()).unwrap();
+
+    let data = data.as_array().unwrap();
+    for tstep in data {
+        let tstep = tstep.as_object().unwrap();
+        let date = tstep.get("timestep_start").unwrap().as_object().unwrap();
+        let date : Date = Date {
+            month: date.get("month").unwrap().as_u64().unwrap() as usize,
+            day: date.get("day").unwrap().as_u64().unwrap() as usize,
+            hour: date.get("hour").unwrap().as_f64().unwrap(),
+        };
+        let controllers = tstep.get("controllers").unwrap();        
+        let person = controllers.as_object().unwrap().get("person").unwrap().as_object().unwrap();
+        
+        let attended = person.get("attended").unwrap().as_bool().unwrap();
+        if attended {            
+            let actual_comfort = person.get("current_comfort").unwrap().as_f64().unwrap();
+            let potential_comfort = person.get("potential_comfort").unwrap().as_f64().unwrap();
+            let satisfaction = person.get("dwelling_satisfaction_before").unwrap().as_f64().unwrap();
+
+            file.write_all(format!("{},{},{},{}\n", date, actual_comfort, potential_comfort, satisfaction).as_bytes()).unwrap();
+        }
+
+    }
+
+}
 
 fn main() {
     
     let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        println!("Error... Usage is: {} epw_file", args[0]);
+    if args.len() != 3 {
+        println!("Error... Usage is: {} weather_file case", args[0]);
         return;
     }
+
+    let case = if args[2] == "case1" {
+        Case::Section1_1
+    }else if args[2] == "case2_without_control" {
+        Case::Section1_2WithoutControl
+    }else if args[2] == "case2_with_control" {
+        Case::Section1_2WithControl
+    }else if args[2] == "case3_busy" {
+        Case::Section1_3Busy
+    }else if args[2] == "case3_not_busy" {
+        Case::Section1_3NotBusy
+    }else { 
+        panic!("Unknown case '{}'", args[2]);
+    };
 
     /* ****************** */
     /* CREATE MAIN ACTORS */
@@ -211,29 +460,48 @@ fn main() {
 
     let mut state = SimulationState::new();        
     let mut building = Building::new("The Building".to_string()); 
-    let mut person = Person::new(&mut state);
+    let mut person = if case.has_control() {
+        Person::new(&mut state)
+    }else{
+        Person::with_fixed_clothing(&mut state, 1.0)        
+    };
+    if case.is_busy(){
+        person.set_sleeping_hours(22.5, 6.5);
+    }
+
+
+    
 
     
     /* ***************** */
     /* LOAD WEATHER FILE */
-    /* ***************** */
-    let weather_file = args[1].clone();
-    let weather = EPWWeather::from_file(weather_file);    
+    /* ***************** */    
+    let weather_file_name = args[1].clone();
+    let weather = EPWWeather::from_file(weather_file_name);    
 
     /* ***************** */
     /*   DEFINE PERSON   */
     /* ***************** */
     
     // Constant proactivity.
-    let proactivity = ScheduleConstant::new(0.4);
-    person.set_proactivity(Box::new(proactivity)).unwrap();
+    
+    let proactivity = if case.is_proactive(){
+        0.99
+    }else{
+        0.0
+    };
+    person.set_proactivity(Box::new(ScheduleConstant::new(proactivity))).unwrap();
 
-    // Constant busyness
-    let busyness = ScheduleConstant::new(0.2);
-    person.set_busyness(Box::new(busyness)).unwrap();
+    // Constant busyness    
+    let busyness = if case.is_busy(){
+        24.0
+    }else{
+        0.0
+    }; 
+    person.set_busyness(Box::new(ScheduleConstant::new(busyness))).unwrap();
 
-    // Constant awareness of the future, 6 hours
-    let awareness = ScheduleConstant::new(6.);
+    // Constant awareness of the future, 3 hours
+    let awareness = ScheduleConstant::new(3. * 3600.);
     person.set_awareness_of_the_future(Box::new(awareness)).unwrap();
     
     // Add perceptions that are relevant to the person. These are polynomials 
@@ -246,18 +514,18 @@ fn main() {
     person.add_perception( poly![0.0, 0.0, -2.], Perception::ThermalSensationHot);    
 
     // Too much and too little clothing are equally bad -> 0 + 0*x - 1*x^2
-    person.add_perception( poly![0.0, 0.0, -1.], Perception::ClothingAnnoyanceTooMuch);
-    person.add_perception( poly![0.0, 0.0, -1.], Perception::ClothingAnnoyanceTooLittle);    
+    person.add_perception( poly![0.0, 0.0, -1.5], Perception::ClothingAnnoyanceTooMuch);
+    person.add_perception( poly![0.0, 0.0, -1.5], Perception::ClothingAnnoyanceTooLittle);    
 
     // Too much and too little Loudness are equally bad -> 0 + 0*x - 1*x^2
-    person.add_perception( poly![0.0, 0.0, -1.], Perception::LoudnessTooMuch);
-    person.add_perception( poly![0.0, 0.0, -1.], Perception::LoudnessTooLittle);
+    person.add_perception( poly![0.0, 0.0, -2.], Perception::LoudnessTooMuch);
+    person.add_perception( poly![0.0, 0.0, -2.], Perception::LoudnessTooLittle);
 
     // Brightness is good (more is better) -> 0 + 7*x
-    person.add_perception( poly![0.0, 7.0], Perception::Brightness);
+    person.add_perception( poly![0.0, 5.0], Perception::Brightness);
 
-    // Utility bills are bad... -> 0 -6*x
-    person.add_perception( poly![0.0, 0.0, -6.], Perception::UtilityBills);
+    // Utility bills are bad... -> 0 -6*x^2
+    person.add_perception( poly![0.0, 0.0, -0.1], Perception::UtilityBills);
 
     
 
@@ -266,15 +534,16 @@ fn main() {
     /* ***************** */
 
     // For the sake of clarity and briefness, this is summarized
-    // in this way. 
+    // in this way. You can find the whole program at 
+    // https://github.com/germolinal/PhD_Thesis_Simulations
     //
-    // This function defines a 2-Bedroom + Livingroom + Bathroom
-    // home. All walls are made of 180mm concrete, and the windows are
+    // This function defines a 2-Bedroom + Livingroom + Bathroom + Kitchen 
+    // + Hallway home. All walls are made of 180mm concrete, and the windows are
     // 3mm glass.
     // 
     // Every space has openable windows, a 1500W heater and 180W of 
     // switchable lights
-    create_building(&mut building, &mut state);
+    create_building(case, &mut building, &mut state);
 
     
     /* ******************** */
@@ -283,25 +552,43 @@ fn main() {
 
     let start = Date{
         day: 1,
-        month: 1,
+        month: 7,
         hour: 0.0,
     };
 
-    let mut end = start.clone();
-    end.add_hours(72.0);
+    let mut end = start.clone();    
+    end.add_days(2);  
 
     /* ********** */
     /*  SIMULATE  */
     /* ********** */
 
-    let n = 12; // tsteps per hour
+    let n = 60; // tsteps per hour
+    
+    // This function is not publicly available, at least for now. Contact 
+    // me for details.
     let results = simple_lib::run(start, end, &person, &mut building, &mut state, &weather, n).unwrap();
 
     /* *************** */
     /*  PRINT RESULTS  */
     /* *************** */
+    
+    let mut file = std::fs::File::create(format!("{}.json",case.filename())).unwrap();
+    let file_content = format!("{}",serde_json::to_string_pretty(&results).unwrap());
+    file.write_all(file_content.as_bytes()).unwrap();
+    
+    /* PROCESS RESULTS */
 
-    println!("{}",serde_json::to_string_pretty(&results).unwrap())
+    let data = fs::read_to_string(format!("{}.json",case.filename())).unwrap();
+    let res : serde_json::Value = serde_json::from_str(&data).expect("Unable to parse");
+    match case {
+        Case::Section1_1 => {
+            write_operation(case, &building, res);
+        },
+        _ => {
+            write_comfort(case, res);
+        }
+    }
     
     
 }

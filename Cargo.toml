@@ -28,8 +28,9 @@ controller = { path = "../controller" }
 polynomial = { path = "../polynomial" }
 simple_results = { path = "../simple_results" }
 serde_json = "1.0"
-
-#[dev-dependencies]
 geometry3d = {path = "../geometry3d"}
 
-
+[profile.release]
+debug = true
+lto = true
+codegen-units = 1
